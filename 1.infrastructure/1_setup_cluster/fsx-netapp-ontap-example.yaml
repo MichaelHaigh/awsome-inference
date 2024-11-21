@@ -1,0 +1,135 @@
+Description:
+  This template deploys an FSx for NetApp ONTAP file system, necessary passwords, and
+  an IAM Role and Policy for NetApp Trident CSI to make use of the FSx deployment.
+
+Parameters:
+  EnvironmentName:
+    Description: An environment name that is prefixed to resource names
+    Type: String
+  FSxStorageCapacity:
+    Description: The storage capacity of the FSx for NetApp ONTAP file system (in GiB)
+    Type: Number
+    Default: 4096
+  FSxSVMName:
+    Description: The name of the FSx for NetApp ONTAP Storage VM
+    Type: String
+    Default: SVM1
+  FSxThroughputCapacity:
+    Description: The throughput capacity of the FSx for ONTAP file system (in MBps)
+    Type: Number
+    Default: 3072
+  PrivateSubnets:
+    Description: The PrivateSubnets OutputValue from vpc-cf-example.yaml
+    Type: String
+  PrivateRouteTables:
+    Description: The PrivateRouteTables OutputValue from vpc-cf-example.yaml
+    Type: String
+  VPC:
+    Description: The VPC OutputValue from vpc-cf-example.yaml
+    Type: String
+  VpcCIDR:
+    Description: The VpcCIDR input parameter from vpc-cf-example.yaml
+    Type: String
+    Default: 10.0.0.0/16
+
+Resources:
+  FSxSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: FSx ONTAP Security Group
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: "-1"
+          CidrIp: !Ref VpcCIDR
+
+  FsxAdminPassword:
+    Type: "AWS::SecretsManager::Secret"
+    Properties:
+      Description: FSx ONTAP Admin (fsxadmin) Password
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"fsxadmin"}'
+        GenerateStringKey: password
+        PasswordLength: 16
+      Name: !Join ["-", [!Ref EnvironmentName, "fsxadmin"]]
+
+  FsxSvmPassword:
+    Type: "AWS::SecretsManager::Secret"
+    Properties:
+      Description: FSx SVM Admin (vsadmin) Password
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"vsadmin"}'
+        GenerateStringKey: password
+        PasswordLength: 16
+      Name: !Join ["-", [!Ref EnvironmentName, "vsadmin"]]
+
+  FSxONTAP:
+    Type: "AWS::FSx::FileSystem"
+    DependsOn: FsxAdminPassword
+    Properties:
+      FileSystemType: ONTAP
+      OntapConfiguration:
+        DeploymentType: MULTI_AZ_2
+        FsxAdminPassword: !Join
+          - ""
+          - - "{{resolve:secretsmanager:"
+            - !Ref EnvironmentName
+            - "-fsxadmin:SecretString:password}}"
+        PreferredSubnetId: !Select ["0", !Split [",", !Ref PrivateSubnets]]
+        RouteTableIds: !Split [",", !Ref PrivateRouteTables]
+        ThroughputCapacity: !Ref FSxThroughputCapacity
+      SecurityGroupIds:
+        - !Ref FSxSecurityGroup
+      StorageCapacity: !Ref FSxStorageCapacity
+      SubnetIds: !Split [",", !Ref PrivateSubnets]
+      Tags:
+        - Key: "Name"
+          Value: !Join ["-", [!Ref EnvironmentName, "fsx-netapp"]]
+
+  FSxSVM:
+    Type: "AWS::FSx::StorageVirtualMachine"
+    DependsOn: FsxSvmPassword
+    Properties:
+      FileSystemId: !Ref FSxONTAP
+      Name: !Ref FSxSVMName
+      SvmAdminPassword: !Join
+        - ""
+        - - "{{resolve:secretsmanager:"
+          - !Ref EnvironmentName
+          - "-vsadmin:SecretString:password}}"
+
+  TridentIamPolicy:
+    Type: "AWS::IAM::ManagedPolicy"
+    Properties:
+      Description: Policy for NetApp Trident CSI
+      ManagedPolicyName: !Join ["-", [!Ref EnvironmentName, "trident-policy"]]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Resource: "*"
+            Action:
+              - "fsx:DescribeFileSystems"
+              - "fsx:DescribeVolumes"
+              - "fsx:CreateVolume"
+              - "fsx:RestoreVolumeFromSnapshot"
+              - "fsx:DescribeStorageVirtualMachines"
+              - "fsx:UntagResource"
+              - "fsx:UpdateVolume"
+              - "fsx:TagResource"
+              - "fsx:DeleteVolume"
+          - Effect: Allow
+            Resource:
+              - !Ref FsxAdminPassword
+              - !Ref FsxSvmPassword
+            Action: "secretsmanager:GetSecretValue"
+
+Outputs:
+  TridentIamPolicy:
+    Description: A reference to the created Trident IAM Policy
+    Value: !Ref TridentIamPolicy
+  FSxFsId:
+    Description: The FSx for NetApp ONTAP FileSystem ID
+    Value: !Ref FSxONTAP
+  FsxSvmPasswordArn:
+    Description: The FSx for NetApp ONTAP SVM Password ARN
+    Value: !Ref FsxSvmPassword

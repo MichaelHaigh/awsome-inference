@@ -1,0 +1,4 @@
+{
+    "cloudIdentity": "'eks.amazonaws.com/role-arn: PLACEHOLDER_ROLE_ARN'",
+    "cloudProvider": "AWS"
+}
